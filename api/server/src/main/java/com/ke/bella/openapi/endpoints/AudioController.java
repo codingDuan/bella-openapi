@@ -18,6 +18,9 @@ import com.ke.bella.openapi.protocol.asr.AudioTranscriptionResponse.AudioTranscr
 import com.ke.bella.openapi.protocol.asr.diarization.SpeakerDiarizationAdaptor;
 import com.ke.bella.openapi.protocol.asr.diarization.SpeakerDiarizationProperty;
 import com.ke.bella.openapi.protocol.asr.diarization.SpeakerDiarizationResponse;
+import com.ke.bella.openapi.protocol.asr.transcription.TranscriptionsRequest;
+import com.ke.bella.openapi.protocol.asr.transcription.TranscriptionsResponse;
+import com.ke.bella.openapi.utils.TranscriptionsConverter;
 import com.ke.bella.openapi.protocol.asr.flash.FlashAsrAdaptor;
 import com.ke.bella.openapi.protocol.asr.flash.FlashAsrResponse;
 import com.ke.bella.openapi.protocol.limiter.LimiterManager;
@@ -31,6 +34,7 @@ import com.ke.bella.openapi.protocol.speaker.SpeakerEmbeddingResponse;
 import com.ke.bella.openapi.protocol.tts.TtsAdaptor;
 import com.ke.bella.openapi.protocol.tts.TtsProperty;
 import com.ke.bella.openapi.protocol.tts.TtsRequest;
+import com.ke.bella.openapi.service.EndpointDataService;
 import com.ke.bella.openapi.tables.pojos.ChannelDB;
 import com.ke.bella.openapi.utils.JacksonUtils;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -47,7 +51,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.socket.server.support.WebSocketHttpRequestHandler;
 
 import javax.servlet.AsyncContext;
@@ -82,6 +88,8 @@ public class AudioController {
     private EndpointLogger logger;
     @Autowired
     private JobQueueProperties jobQueueProperties;
+    @Autowired
+    private EndpointDataService endpointDataService;
 
     /**
      * 实时语音识别WebSocket接口
@@ -96,11 +104,11 @@ public class AudioController {
         }
 
         String endpoint = EndpointContext.getRequest().getRequestURI();
-        EndpointContext.setEndpointData(endpoint, model, null);
+        endpointDataService.setEndpointData(endpoint, model, null);
         EndpointProcessData processData = EndpointContext.getProcessData();
 
         ChannelDB channel = router.route(endpoint, model, EndpointContext.getApikey(), processData.isMock());
-        EndpointContext.setEndpointData(channel);
+        endpointDataService.setChannel(channel);
 
         if(!EndpointContext.getProcessData().isPrivate()) {
             limiterManager.incrementConcurrentCount(EndpointContext.getProcessData().getAkCode(), model);
@@ -125,10 +133,10 @@ public class AudioController {
     public void speech(@RequestBody TtsRequest request, HttpServletRequest httpRequest, HttpServletResponse response) throws IOException {
         String ttsEndpoint = EndpointContext.getRequest().getRequestURI();
         String ttsModel = request.getModel();
-        EndpointContext.setEndpointData(ttsEndpoint, ttsModel, request);
+        endpointDataService.setEndpointData(ttsEndpoint, ttsModel, request);
         EndpointProcessData processData = EndpointContext.getProcessData();
         ChannelDB ttsChannel = router.route(ttsEndpoint, ttsModel, EndpointContext.getApikey(), processData.isMock());
-        EndpointContext.setEndpointData(ttsChannel);
+        endpointDataService.setChannel(ttsChannel);
         if(!EndpointContext.getProcessData().isPrivate()) {
             limiterManager.incrementConcurrentCount(EndpointContext.getProcessData().getAkCode(), ttsModel);
         }
@@ -159,6 +167,49 @@ public class AudioController {
         byte[] data = ttsAdaptor.tts(request, ttsUrl, ttsProperty);
         response.setContentType(getContentType(request.getResponseFormat()));
         response.getOutputStream().write(data);
+    }
+
+    /**
+     * OpenAI-compatible audio transcriptions endpoint
+     */
+    @PostMapping("/transcriptions")
+    @SuppressWarnings({ "rawtypes", "unchecked" })
+    public TranscriptionsResponse transcriptions(TranscriptionsRequest request) throws IOException {
+
+        // 获取文件格式
+        String format = TranscriptionsConverter.getAudioFormatFromFilename(request.getFile().getOriginalFilename());
+
+        String endpoint = "/v1/audio/asr/flash"; // 使用 Flash ASR 能力点
+        String model = request.getModel();
+        endpointDataService.setEndpointData(endpoint, model, request.summary());
+        EndpointProcessData processData = EndpointContext.getProcessData();
+        ChannelDB channel = router.route(endpoint, model, EndpointContext.getApikey(), processData.isMock());
+        endpointDataService.setChannel(channel);
+
+        if(!EndpointContext.getProcessData().isPrivate()) {
+            limiterManager.incrementConcurrentCount(EndpointContext.getProcessData().getAkCode(), model);
+        }
+
+        String protocol = processData.getProtocol();
+        String url = processData.getForwardUrl();
+        String channelInfo = channel.getChannelInfo();
+
+        // 调用 Flash ASR
+        FlashAsrAdaptor flashAsrAdaptor = adaptorManager.getProtocolAdaptor(endpoint, protocol, FlashAsrAdaptor.class);
+        AsrProperty property = (AsrProperty) JacksonUtils.deserialize(channelInfo, flashAsrAdaptor.getPropertyClass());
+
+        AsrRequest asrRequest = AsrRequest.builder()
+                .model(model)
+                .format(format)
+                .sampleRate(16000)
+                .maxSentenceSilence(3000)
+                .content(StreamUtils.copyToByteArray(request.getFile().getInputStream()))
+                .build();
+
+        FlashAsrResponse flashResponse = flashAsrAdaptor.asr(asrRequest, url, property, processData);
+
+        // 转换为 OpenAI 格式
+        return TranscriptionsConverter.convertFlashAsrToOpenAI(flashResponse, request.getResponseFormat());
     }
 
 
@@ -238,6 +289,7 @@ public class AudioController {
             @RequestHeader(value = "model", required = false) String model,
             @RequestHeader(value = "hot_words", defaultValue = "") String hotWords,
             @RequestHeader(value = "hot_words_table_id", defaultValue = "") String hotWordsTableId,
+            @RequestHeader(value = "convert_numbers", defaultValue = "false") boolean convertNumbers,
             InputStream inputStream) throws IOException {
         String endpoint = EndpointContext.getRequest().getRequestURI();
         // 手动解码hot_words中的中文字符
@@ -258,12 +310,13 @@ public class AudioController {
                 .sampleRate(sampleRate)
                 .hotWords(decodedHotWords)
                 .hotWordsTableId(hotWordsTableId)
+                .convertNumbers(convertNumbers)
                 .content(StreamUtils.copyToByteArray(inputStream))
                 .build();
-        EndpointContext.setEndpointData(endpoint, model, request);
+        endpointDataService.setEndpointData(endpoint, model, request.summary());
         EndpointProcessData processData = EndpointContext.getProcessData();
         ChannelDB channel = router.route(endpoint, model, EndpointContext.getApikey(), processData.isMock());
-        EndpointContext.setEndpointData(channel);
+        endpointDataService.setChannel(channel);
         if(!EndpointContext.getProcessData().isPrivate()) {
             limiterManager.incrementConcurrentCount(EndpointContext.getProcessData().getAkCode(), model);
         }
@@ -280,10 +333,10 @@ public class AudioController {
     public SpeakerEmbeddingResponse speakerEmbedding(@RequestBody SpeakerEmbeddingRequest request) {
         String endpoint = EndpointContext.getRequest().getRequestURI();
         String model = request.getModel();
-        EndpointContext.setEndpointData(endpoint, model, request);
+        endpointDataService.setEndpointData(endpoint, model, request.summary());
         EndpointProcessData processData = EndpointContext.getProcessData();
         ChannelDB channel = router.route(endpoint, model, EndpointContext.getApikey(), processData.isMock());
-        EndpointContext.setEndpointData(channel);
+        endpointDataService.setChannel(channel);
         if(!EndpointContext.getProcessData().isPrivate()) {
             limiterManager.incrementConcurrentCount(EndpointContext.getProcessData().getAkCode(), model);
         }
@@ -301,10 +354,10 @@ public class AudioController {
     public SpeakerDiarizationResponse speakerDiarization(@RequestBody AudioTranscriptionReq audioTranscriptionReq) {
         String endpoint = EndpointContext.getRequest().getRequestURI();
         String model = audioTranscriptionReq.getModel();
-        EndpointContext.setEndpointData(endpoint, model, audioTranscriptionReq);
+        endpointDataService.setEndpointData(endpoint, model, audioTranscriptionReq);
         EndpointProcessData processData = EndpointContext.getProcessData();
         ChannelDB channel = router.route(endpoint, model, EndpointContext.getApikey(), processData.isMock());
-        EndpointContext.setEndpointData(channel);
+        endpointDataService.setChannel(channel);
         if(!EndpointContext.getProcessData().isPrivate()) {
             limiterManager.incrementConcurrentCount(EndpointContext.getProcessData().getAkCode(), model);
         }

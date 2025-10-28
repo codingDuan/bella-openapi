@@ -7,14 +7,19 @@ JAVA_COMMENT="java"
 # JVM 参数
 JAVA_OPTS="$JAVA_OPTS -server -Xms2048m -Xmx2048m"
 JAVA_OPTS="$JAVA_OPTS -XX:MetaspaceSize=512m -XX:MaxMetaspaceSize=512m"
+JAVA_OPTS="$JAVA_OPTS -XX:MaxDirectMemorySize=1024m"
+# 确保 System.gc() 可以被响应，用于堆外内存回收（不要添加 -XX:+DisableExplicitGC）
 JAVA_OPTS="$JAVA_OPTS -Dlogging.path=${MATRIX_APPLOGS_DIR}"
 JAVA_OPTS="$JAVA_OPTS -Dsun.net.inetaddr.ttl=1 -Dsun.net.inetaddr.negative.ttl=1"
 JAVA_OPTS="$JAVA_OPTS -XX:+PrintGCDetails -XX:+PrintGCDateStamps -Xloggc:${MATRIX_ACCESSLOGS_DIR}/gc-%t.log"
 
 # GC 参数
-GC_OPTS="$GC_OPTS -XX:+UseG1GC -XX:G1HeapRegionSize=4m -XX:MaxGCPauseMillis=500 -XX:InitiatingHeapOccupancyPercent=50 -XX:G1ReservePercent=10"
-GC_OPTS="$GC_OPTS -XX:+UnlockExperimentalVMOptions -XX:+G1EagerReclaimHumongousObjects -XX:+G1TraceEagerReclaimHumongousObjects -XX:G1LogLevel=finest"
-GC_OPTS="$GC_OPTS -XX:+ParallelRefProcEnabled -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4 -XX:+ExplicitGCInvokesConcurrent -XX:+UseFastAccessorMethods"
+GC_OPTS="$GC_OPTS -XX:+UseG1GC -XX:G1HeapRegionSize=2m -XX:MaxGCPauseMillis=500 -XX:InitiatingHeapOccupancyPercent=40 -XX:G1ReservePercent=10"
+GC_OPTS="$GC_OPTS -XX:+UnlockExperimentalVMOptions -XX:+G1EagerReclaimHumongousObjects"
+GC_OPTS="$GC_OPTS -XX:+ParallelRefProcEnabled -XX:+UseFastAccessorMethods -XX:ParallelGCThreads=4 -XX:ConcGCThreads=2 -XX:+ExplicitGCInvokesConcurrent"
+GC_OPTS="$GC_OPTS -XX:+PrintPromotionFailure -XX:+PrintGCApplicationStoppedTime -XX:+PrintGCCause -XX:GCLogFileSize=20M -XX:NumberOfGCLogFiles=5 -XX:+UseGCLogFileRotation"
+GC_OPTS="$GC_OPTS -XX:-UseBiasedLocking -XX:AutoBoxCacheMax=20000 -Djava.security.egd=file:/dev/./urandom"
+GC_OPTS="$GC_OPTS -XX:+PrintCommandLineFlags -XX:-OmitStackTraceInFastThrow"
 
 # 测试、预览开启DEBUG功能，生产开启JMX
 if [ "$ENVTYPE" != "" ]; then

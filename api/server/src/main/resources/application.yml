@@ -1,6 +1,7 @@
 server:
   tomcat:
-    max-threads: 500
+    threads:
+      max: 300
   max-http-header-size: 10240
 
 spring:
@@ -69,6 +70,7 @@ bella:
     cookie-context-path: /
   openapi:
     max-models-per-request: 3
+    service: openapi
     host: http://localhost:8080
 
 app:
@@ -89,7 +91,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: 'health,info,prometheus'
+        include: 'health,info,prometheus,metrics'
   metrics:
     export:
       prometheus:

@@ -1,31 +1,33 @@
 package com.ke.bella.openapi.protocol.ocr;
 
-import com.ke.bella.openapi.protocol.OpenapiResponse;
-import com.ke.bella.openapi.protocol.ocr.util.ImageConverter;
-import com.ke.bella.openapi.server.OpenAiServiceFactory;
-import com.ke.bella.openapi.utils.HttpUtils;
-import com.theokanning.openai.service.OpenAiService;
-import lombok.extern.slf4j.Slf4j;
-import okhttp3.FormBody;
-import okhttp3.Request;
-import okhttp3.RequestBody;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpStatus;
-import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
-
-import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Base64;
 import java.util.Date;
 import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
+
+import com.ke.bella.openapi.protocol.OpenapiResponse;
+import com.ke.bella.openapi.protocol.ocr.idcard.BaiduOcrIdcardRequest;
+import com.ke.bella.openapi.protocol.ocr.idcard.BaiduOcrIdcardResponse;
+import com.ke.bella.openapi.protocol.ocr.idcard.OcrIdcardResponse;
+import com.ke.bella.openapi.protocol.ocr.util.ImageConverter;
+import com.ke.bella.openapi.utils.HttpUtils;
+
+import lombok.extern.slf4j.Slf4j;
+import okhttp3.FormBody;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+
 /**
  * 百度OCR适配器
  */
 @Slf4j
-@Component("baiduOcr")
-public class BaiduOcrAdaptor implements OcrIdcardAdaptor<BaiduOcrProperty> {
+@Component("baiduIdcard")
+public class BaiduIdcardAdaptor implements OcrIdcardAdaptor<BaiduOcrProperty> {
 
     private static final String FRONT_SIDE = "front";
     private static final String IMAGE_STATUS_REVERSED = "reversed_side";
@@ -49,7 +51,7 @@ public class BaiduOcrAdaptor implements OcrIdcardAdaptor<BaiduOcrProperty> {
     private static final String FIELD_EXPIRE_DATE = "失效日期";
 
     @Autowired
-    private OpenAiServiceFactory openAiServiceFactory;
+    private ImageRetrievalService imageRetrievalService;
 
     @Override
     public String getDescription() {
@@ -62,14 +64,15 @@ public class BaiduOcrAdaptor implements OcrIdcardAdaptor<BaiduOcrProperty> {
     }
 
     @Override
-    public OcrIdcardResponse idcard(OcrIdcardRequest request, String url, BaiduOcrProperty property) {
+    public OcrIdcardResponse idcard(OcrRequest request, String url, BaiduOcrProperty property) {
         BaiduOcrIdcardRequest baiduOcrIdcardRequest = requestConvert(request);
         Request httpRequest = buildRequest(baiduOcrIdcardRequest, url, property);
+        clearLargeData(request, baiduOcrIdcardRequest);
         BaiduOcrIdcardResponse baiduOcrIdcardResponse = HttpUtils.httpRequest(httpRequest, BaiduOcrIdcardResponse.class);
         return responseConvert(baiduOcrIdcardResponse, baiduOcrIdcardRequest);
     }
 
-    private BaiduOcrIdcardRequest requestConvert(OcrIdcardRequest request) {
+    private BaiduOcrIdcardRequest requestConvert(OcrRequest request) {
         BaiduOcrIdcardRequest.BaiduOcrIdcardRequestBuilder builder = BaiduOcrIdcardRequest.builder();
         // 处理图片数据：url和image二选一
         if(StringUtils.hasText(request.getImageUrl())) {
@@ -83,7 +86,7 @@ public class BaiduOcrAdaptor implements OcrIdcardAdaptor<BaiduOcrProperty> {
                 base64Data = ImageConverter.cleanBase64DataHeader(request.getImageBase64());
             } else {
                 // 如果有fileId，先获取文件内容然后转为base64
-                byte[] imageData = getImageFromFileId(request.getFileId());
+                byte[] imageData = imageRetrievalService.getImageFromFileId(request.getFileId());
                 base64Data = Base64.getEncoder().encodeToString(imageData);
             }
             builder.image(base64Data);
@@ -129,18 +132,6 @@ public class BaiduOcrAdaptor implements OcrIdcardAdaptor<BaiduOcrProperty> {
                 .add("detect_screenshot", request.getDetectScreenshot());
 
         return builder.build();
-    }
-
-    /**
-     * 从文件ID获取图片数据
-     */
-    private byte[] getImageFromFileId(String fileId) {
-        OpenAiService openAiService = openAiServiceFactory.create(10, 60);
-        try {
-            return openAiService.retrieveDomTreeContent(fileId).bytes();
-        } catch (IOException e) {
-            throw new IllegalStateException(e);
-        }
     }
 
     /**

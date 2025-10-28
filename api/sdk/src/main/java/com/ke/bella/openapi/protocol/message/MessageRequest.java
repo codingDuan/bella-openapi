@@ -1,5 +1,6 @@
 package com.ke.bella.openapi.protocol.message;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
@@ -12,6 +13,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
+import com.ke.bella.openapi.protocol.IMemoryClearable;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -26,7 +28,7 @@ import java.util.List;
 @AllArgsConstructor
 @Builder
 @JsonInclude(JsonInclude.Include.NON_NULL)
-public class MessageRequest {
+public class MessageRequest implements IMemoryClearable {
     private String anthropic_version;
     private String model;
     private List<InputMessage> messages;
@@ -66,6 +68,7 @@ public class MessageRequest {
     @JsonSubTypes({
             @JsonSubTypes.Type(value = TextContentBlock.class, name = "text"),
             @JsonSubTypes.Type(value = ImageContentBlock.class, name = "image"),
+            @JsonSubTypes.Type(value = DocumentContentBlock.class, name = "document"),
             @JsonSubTypes.Type(value = ToolUseContentBlock.class, name = "tool_use"),
             @JsonSubTypes.Type(value = ToolResultContentBlock.class, name = "tool_result"),
             @JsonSubTypes.Type(value = ThinkingContentBlock.class, name = "thinking"),
@@ -128,6 +131,17 @@ public class MessageRequest {
     @NoArgsConstructor
     @EqualsAndHashCode(callSuper = true)
     @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class DocumentContentBlock extends ContentBlock {
+        private DocumentSource source;
+        public String getType() {
+            return "document";
+        }
+    }
+
+    @Data
+    @NoArgsConstructor
+    @EqualsAndHashCode(callSuper = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     public static class ToolUseContentBlock extends ContentBlock {
         private String id;
         private String name;
@@ -177,6 +191,83 @@ public class MessageRequest {
         @JsonProperty("media_type")
         private String mediaType;
         private String data;
+    }
+
+    @JsonTypeInfo(
+        use = JsonTypeInfo.Id.NAME,
+        include = JsonTypeInfo.As.PROPERTY,
+        property = "type")
+    @JsonSubTypes({
+        @JsonSubTypes.Type(value = UrlDocumentSource.class, name = "url"),
+        @JsonSubTypes.Type(value = Base64DocumentSource.class, name = "base64"),
+        @JsonSubTypes.Type(value = FileDocumentSource.class, name = "file"),
+        @JsonSubTypes.Type(value = ContentDocumentSource.class, name = "content"),
+        @JsonSubTypes.Type(value = TextDocumentSource.class, name = "text")
+    })
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @Data
+    public static abstract class DocumentSource {
+        private String type;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @EqualsAndHashCode(callSuper = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class UrlDocumentSource extends DocumentSource {
+        private String url;
+        public String getType() {
+            return "url";
+        }
+    }
+
+    @Data
+    @NoArgsConstructor
+    @EqualsAndHashCode(callSuper = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class Base64DocumentSource extends DocumentSource {
+        @JsonProperty("media_type")
+        private String mediaType;
+        private String data;
+        public String getType() {
+            return "base64";
+        }
+    }
+
+    @Data
+    @NoArgsConstructor
+    @EqualsAndHashCode(callSuper = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class FileDocumentSource extends DocumentSource {
+        @JsonProperty("file_id")
+        private String fileId;
+        public String getType() {
+            return "file";
+        }
+    }
+
+    @Data
+    @NoArgsConstructor
+    @EqualsAndHashCode(callSuper = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class ContentDocumentSource extends DocumentSource {
+        private String content;
+        public String getType() {
+            return "content";
+        }
+    }
+
+    @Data
+    @NoArgsConstructor
+    @EqualsAndHashCode(callSuper = true)
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class TextDocumentSource extends DocumentSource {
+        private String data;
+        @JsonProperty("media_type")
+        private String mediaType; // "text/plain"
+        public String getType() {
+            return "text";
+        }
     }
 
     @Data
@@ -367,5 +458,27 @@ public class MessageRequest {
                 throw new JsonMappingException(p, "Content field must be either String or List<ContentBlock>");
             }
         }
+    }
+
+    // 内存清理相关字段和方法
+    @JsonIgnore
+    private volatile boolean cleared = false;
+
+    @Override
+    public void clearLargeData() {
+        if (!cleared) {
+            // 清理占用大量内存的字段
+            this.messages = null;
+            this.system = null;
+            this.tools = null;
+
+            // 标记为已清理
+            this.cleared = true;
+        }
+    }
+
+    @Override
+    public boolean isCleared() {
+        return cleared;
     }
 }
